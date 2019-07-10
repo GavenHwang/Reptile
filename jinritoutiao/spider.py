@@ -9,11 +9,12 @@ import requests
 from bs4 import BeautifulSoup
 from requests.exceptions import RequestException
 from urllib.parse import urlencode
-import psycopg2
+import pymysql
 from multiprocessing import Pool
 from config import *
 
 
+# 1.根据关键字获得索引页信息
 def get_page_index(offset, keyword):
     data = {
         'autoload': 'true',
@@ -34,6 +35,7 @@ def get_page_index(offset, keyword):
         return None
 
 
+# 2.根据索引页信息，拿到文章地址列表
 def parse_page_index(html):
     data = json.loads(html)
     if data and 'data' in data.keys():
@@ -41,18 +43,20 @@ def parse_page_index(html):
             yield item.get('article_url')
 
 
+# 3.拿到文章地址后，根据文章地址获得文章详细信息
 def get_page_detail(url):
     try:
-        url = 'https://www.toutiao.com/a' + url[25:]
-        response = requests.get(url)
-        if response.status_code == 200:
-            return response.text
-        return None
+        if url:
+            url = 'https://www.toutiao.com/a' + url[25:]
+            response = requests.get(url)
+            if response.status_code == 200:
+                return response.text
+            return None
     except RequestException:
         print('请求详情页出错！', url)
         return None
 
-
+# 4.从文章信息中提取标题和图片信息
 def parse_page_detail(html, url):
     soup = BeautifulSoup(html, 'lxml')
     titles = soup.select('title')
@@ -60,15 +64,15 @@ def parse_page_detail(html, url):
         title = soup.select('title')[0].get_text()
     else:
         title = ''
-    print(title)
-    images_pattern = re.compile('http://p3.pstatp.com/large/([\w]+)&quot;', re.S)
+    # re.S 换行匹配
+    images_pattern = re.compile('http://p5a.pstatp.com/large/([\w]+)&quot;', re.S)
     # result = re.search(images_pattern, html)
     result = re.findall(images_pattern, html)
     # if data and 'sub_images' in data.keys():
     #     sub_images = data.get('sub_images')
     #     images = [item.get('url') for item in sub_images]
     for i in range(len(result)):
-        result[i] = 'http://p3.pstatp.com/large/' + result[i]
+        result[i] = 'http://p5a.pstatp.com/large/' + result[i]
     images = result
     for image in images:
         download_image(image)
@@ -78,9 +82,9 @@ def parse_page_detail(html, url):
         'images': images
     }
 
-
+# 5.保存图片到数据库
 def save_to_postgres(result):
-    conn = psycopg2.connect(database='Reptile', user='odoo', password='odoo', host='192.168.99.100', port='5432')
+    conn = pymysql.connect(database='reptile', user='root', password='root', host='localhost', port=3306)
     cur = conn.cursor()
     if result.get('images') and result.get('images')[0] and result.get('title') and result.get('url'):
         images = ','.join(result.get('images'))
@@ -92,7 +96,7 @@ def save_to_postgres(result):
         cur.close()
         conn.close()
 
-
+# 下载图片
 def download_image(url):
     try:
         print('正在下载：', url)
@@ -104,27 +108,29 @@ def download_image(url):
         print('下载图片出错！', url)
         return None
 
-
+# 保存图片到本地
 def save_image(content):
-    file_path_name = '{0}/{1}.{2}'.format(os.getcwd(), md5(content).hexdigest(), 'jpg')
+    # file_path_name = '{0}/{1}.{2}'.format(os.getcwd(), md5(content).hexdigest(), 'jpg')
     file_path_name = '{0}/{1}.{2}'.format('D:\\Reptile', md5(content).hexdigest(), 'jpg')
     if not os.path.exists(file_path_name):
         with open(file_path_name, 'wb') as f:
             f.write(content)
             f.close()
 
-
+# 主函数
 def main(offset):
     html = get_page_index(offset, KEYWORD)
-    for url in parse_page_index(html):
-        html = get_page_detail(url)
-        if html:
-            result = parse_page_detail(html, url)
-            save_to_postgres(result)
+    if html:
+        for url in parse_page_index(html):
+            html = get_page_detail(url)
+            print(html)
+            if html:
+                result = parse_page_detail(html, url)
+                save_to_postgres(result)
 
 
 if __name__ == '__main__':
     # main()
     groups = [x*20 for x in range(GROUP_START, GROUP_END+1)]
-    pool = Pool()
+    pool = Pool(4)
     pool.map(main, groups)
